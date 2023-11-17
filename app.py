@@ -1,16 +1,17 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, Response, render_template, request, jsonify
+from llama_index import SimpleDirectoryReader,GPTListIndex,GPTVectorStoreIndex,LLMPredictor,PromptHelper,ServiceContext,StorageContext,load_index_from_storage
+from langchain import OpenAI
+import sys
+import os
+from dotenv import load_dotenv
+import openai
 
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-
-
-tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+load_dotenv()
+openai.api_key = os.environ["OPENAI_API_KEY"]
 
 
 app = Flask(__name__)
-
+  
 @app.route("/")
 def index():
     return render_template('chat.html')
@@ -18,26 +19,36 @@ def index():
 
 @app.route("/get", methods=["GET", "POST"])
 def chat():
-    msg = request.form["msg"]
-    input = msg
-    return get_Chat_response(input)
+        input = request.form["msg"]
+        create_index("knowledge")
+        response = answerMe(input)
+        return response
+    
+    
+def create_index(path):
+  max_input = 4096
+  tokens = 200
+  chunk_size = 600 #for LLM, we need to define chunk size
+  max_chunk_overlap = 0.5
 
+  promptHelper = PromptHelper(max_input,tokens,max_chunk_overlap,chunk_size_limit=chunk_size)  #define prompt   
 
-def get_Chat_response(text):
+  llmPredictor = LLMPredictor(llm=OpenAI(temperature=0, model_name="text-ada-001",max_tokens=tokens)) #define LLM
+  docs = SimpleDirectoryReader(path).load_data() #load data
 
-    # Let's chat for 5 lines
-    for step in range(5):
-        # encode the new user input, add the eos_token and return a tensor in Pytorch
-        new_user_input_ids = tokenizer.encode(str(text) + tokenizer.eos_token, return_tensors='pt')
+  #create vector index
 
-        # append the new user input tokens to the chat history
-        bot_input_ids = torch.cat([chat_history_ids, new_user_input_ids], dim=-1) if step > 0 else new_user_input_ids
-
-        # generated a response while limiting the total chat history to 1000 tokens, 
-        chat_history_ids = model.generate(bot_input_ids, max_length=1000, pad_token_id=tokenizer.eos_token_id)
-
-        # pretty print last ouput tokens from bot
-        return tokenizer.decode(chat_history_ids[:, bot_input_ids.shape[-1]:][0], skip_special_tokens=True)
+  service_context = ServiceContext.from_defaults(llm_predictor=llmPredictor,prompt_helper=promptHelper)
+    
+  vectorIndex = GPTVectorStoreIndex.from_documents(documents=docs,service_context=service_context)
+  vectorIndex.storage_context.persist(persist_dir = 'Essai')
+  
+def answerMe(question):
+    storage_context = StorageContext.from_defaults(persist_dir='Essai')
+    index = load_index_from_storage(storage_context)
+    query_engine = index.as_query_engine()
+    response = query_engine.query(question)
+    return response.response
 
 
 if __name__ == '__main__':
